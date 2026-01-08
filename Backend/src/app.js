@@ -4,32 +4,46 @@ const mongoose = require("mongoose");
 const http = require("http");
 require("dotenv").config();
 const { Server } = require("socket.io");
+
 const { TeacherLogin } = require("./controllers/login.js");
- 
 const {
   createPoll,
   voteOnOption,
   getPolls,
-} = require("../src/controllers/poll.js");
+} = require("./controllers/poll.js");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const port = process.env.PORT || 3000;
-
-const DB = process.env.MONGODB_URL  ;
+const DB = process.env.MONGODB_URL;
+let dbReady = false;
 
 mongoose
-  .connect(DB)
-  .then(() => {
-    console.log("Connected to MongoDB");
+  .connect(DB, {
+    serverSelectionTimeoutMS: 5000,
   })
-  .catch((e) => {
-    console.error("Failed to connect to MongoDB:", e);
+  .then(() => {
+    console.log("MongoDB connected");
+  })
+  .catch((err) => {
+    console.error("MongoDB connection failed:", err.message);
   });
-  
+
+mongoose.connection.once("open", () => {
+  dbReady = true;
+});
+app.use((req, res, next) => {
+  if (!dbReady) {
+    return res.status(503).json({
+      message: "Database not connected yet",
+    });
+  }
+  next();
+});
  
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -43,8 +57,6 @@ let votes = {};
 let connectedUsers = {};
 
 io.on("connection", (socket) => {
-   
-
   socket.on("createPoll", async (pollData) => {
     votes = {};
     const poll = await createPoll(pollData);
@@ -84,29 +96,23 @@ io.on("connection", (socket) => {
     io.emit("chatMessage", message);
   });
 
-  socket.on("submitAnswer", (answerData) => {
+  socket.on("submitAnswer", async (answerData) => {
     votes[answerData.option] = (votes[answerData.option] || 0) + 1;
-    voteOnOption(answerData.pollId, answerData.option);
+    await voteOnOption(answerData.pollId, answerData.option);
     io.emit("pollResults", votes);
   });
-
-  socket.on("disconnect", () => {
-    
-  });
 });
+ 
 
 app.get("/", (req, res) => {
   res.send("Polling System Backend");
 });
 
-app.post("/teacher-login", (req, res) => {
-  TeacherLogin(req, res);
-});
+app.post("/teacher-login", TeacherLogin);
 
-app.get("/polls/:teacherUsername", (req, res) => {
-  getPolls(req, res);
-});
+app.get("/polls/:teacherUsername", getPolls);
 
+ 
 server.listen(port, () => {
   console.log(`Server running on port ${port}...`);
 });
